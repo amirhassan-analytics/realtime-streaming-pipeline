@@ -1,0 +1,67 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: stream-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: stream-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  postgres:
+    image: postgres:16
+    container_name: stream-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stream}
+      POSTGRES_DB: ${POSTGRES_DB:-stream}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stream}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  producer:
+    build: .
+    container_name: stream-producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    command: ["python", "-m", "src.producer"]
+
+  streaming:
+    build: .
+    container_name: stream-streaming
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql://${POSTGRES_USER:-stream}:${POSTGRES_PASSWORD:-stream}@postgres:5432/${POSTGRES_DB:-stream}
+    volumes:
+      - ./checkpoints:/app/checkpoints
+    command: ["python", "-m", "src.streaming"]
+
+volumes:
+  postgres_data:
